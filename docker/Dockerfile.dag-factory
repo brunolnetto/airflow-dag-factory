@@ -1,0 +1,22 @@
+# Dockerfile for DAG Factory development and testing
+# File: docker/Dockerfile.dag-factory
+
+FROM apache/airflow:2.8.0-python3.10
+
+# Install additional dependencies
+COPY requirements-dag-factory.txt /tmp/
+RUN pip install --no-cache-dir -r /tmp/requirements-dag-factory.txt
+
+# Copy DAG Factory code
+COPY dags/dag_factory.py /opt/airflow/dags/
+COPY dags/functions/ /opt/airflow/dags/functions/
+COPY dags/scripts/ /opt/airflow/dags/scripts/
+COPY dags/configs/ /opt/airflow/dags/configs/
+
+# Set proper permissions
+USER airflow
+RUN chmod +x /opt/airflow/dags/scripts/*.py
+
+# Environment variables for DAG Factory
+ENV DAG_FACTORY_CONFIG_DIR=/opt/airflow/dags/configs
+ENV DAG_FACTORY_FUNCTIONS_DIR=/opt/airflow/dags/functions

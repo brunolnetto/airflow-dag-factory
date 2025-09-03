@@ -1,45 +1,53 @@
 # File: Makefile
 
-.PHONY: help install test lint format validate deploy-local clean
+.PHONY: help install test lint format validate deploy-local clean dev-install
 
 help: ## Show this help message
 	@echo "DAG Factory Development Commands:"
 	@echo ""
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-20s %s\n", $1, $2}'
 
-install: ## Install development dependencies
-	pip install -r requirements-dev.txt
-	pip install -e .
+install: ## Install package for production
+	uv pip install .
+
+dev-install: ## Install development dependencies with uv
+	uv pip install -e ".[dev]"
 
 test: ## Run all tests
-	pytest dags/tests/ -v --cov=dag_factory --cov-report=html
+	pytest tests/ -v --cov=src --cov-report=html
 
 test-fast: ## Run tests without coverage
-	pytest dags/tests/ -v -x
+	pytest tests/ -v -x
 
-lint: ## Run linting
-	flake8 dags/ --max-line-length=120 --exclude=tests/
-	pylint dags/dag_factory.py dags/functions/
+lint: ## Run linting with ruff
+	ruff check src/ tests/
+	mypy src/
 
-format: ## Format code
-	black dags/ --line-length=120
-	isort dags/ --profile=black
+format: ## Format code with black and ruff
+	black src/ tests/ --line-length=120
+	ruff --fix src/ tests/
 
 validate: ## Validate all configurations
 	@echo "Validating DAG configurations..."
 	@for config in dags/configs/*.yaml; do \
-		echo "Validating $config..."; \
-		python dags/scripts/validate_config.py "$config" || exit 1; \
+		echo "Validating $$config..."; \
+		python -m src.cli validate "$$config" || exit 1; \
 	done
 	@echo "✅ All configurations are valid"
 
 generate-test: ## Test DAG generation
 	@echo "Testing DAG generation..."
-	@cd dags && python -c "from dag_factory import DAGFactory; factory = DAGFactory('configs'); dags = list(factory.generate_dags_from_directory()); print(f'✅ Generated {len(dags)} DAGs')"
+	@python -m src.cli list-templates --verbose
 
 security-scan: ## Run security scans
-	bandit -r dags/ -ll
-	safety check
+	ruff check --select S src/ tests/
+	bandit -r src/ -ll
+
+build: ## Build package
+	uv build
+
+publish: ## Publish to PyPI
+	uv publish
 
 deploy-local: ## Deploy to local Docker environment
 	docker-compose -f docker/docker-compose.dag-factory.yml up -d
@@ -55,10 +63,10 @@ clean: ## Clean up build artifacts
 	find . -type f -name "*.pyc" -delete
 	find . -type d -name "__pycache__" -delete
 	find . -type d -name "*.egg-info" -exec rm -rf {} +
-	rm -rf build/ dist/ .coverage htmlcov/ .pytest_cache/
+	rm -rf build/ dist/ .coverage htmlcov/ .pytest_cache/ .ruff_cache/
 
-build-docs: ## Build documentation
-	cd docs && make html
+build-docs: ## Build documentation with mkdocs
+	mkdocs build
 
 serve-docs: ## Serve documentation locally
-	cd docs/_build/html && python -m http.server 8000
+	mkdocs serve

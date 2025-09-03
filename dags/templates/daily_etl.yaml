@@ -1,0 +1,48 @@
+# Daily ETL Template (inherits from base_etl)
+template:
+  extends: base_etl
+  overrides:
+    schedule: "@daily"
+    start_date: "2024-01-01"
+
+description: "Daily ETL workflow template"
+tags: [generated, etl, daily]
+
+# Additional daily-specific configurations
+schedule: "@daily"
+start_date: "2024-01-01"
+
+# Override retry settings for daily jobs
+retries: 3
+retry_delay: 600  # 10 minutes
+
+# Add monitoring tasks
+tasks:
+  - task_id: data_quality_check
+    operator: python
+    parameters:
+      python_callable: "monitoring.data_quality.check_daily_metrics"
+    depends_on: [validate]
+    
+  - task_id: send_completion_email
+    operator: email
+    parameters:
+      to: ["data-team@company.com"]
+      subject: "Daily ETL Completed: {{ ds }}"
+      html_content: "Daily ETL for {{ ds }} completed successfully."
+    depends_on: [data_quality_check]
+
+# Update task groups
+task_groups:
+  - group_id: etl_pipeline
+    tooltip: "ETL Pipeline Tasks"
+    tasks: [extract, transform, load, validate]
+  - group_id: monitoring
+    tooltip: "Monitoring and Alerting"
+    tasks: [data_quality_check, send_completion_email]
+
+# Assets for dataset dependencies
+assets:
+  produces: 
+    - "s3://data-lake/daily-processed/{{ ds }}"
+    - "postgres://warehouse/daily_facts"

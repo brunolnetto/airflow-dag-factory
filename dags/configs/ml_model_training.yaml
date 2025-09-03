@@ -1,0 +1,154 @@
+dag_id: ml_model_training
+description: "Machine learning model training pipeline"
+schedule: "@weekly"
+start_date: "2024-01-01"
+tags: ["ml", "training", "weekly"]
+
+# Template inheritance
+template:
+  extends: "ml_pipeline"
+  overrides:
+    retries: 2
+    retry_delay: 600
+
+# Environment-specific settings
+environments:
+  dev:
+    schedule: "@daily"
+    max_active_runs: 1
+    email: ["ml-dev@company.com"]
+  staging:
+    schedule: "@weekly"
+    max_active_runs: 1
+    email: ["ml-staging@company.com"]
+  prod:
+    schedule: "@weekly"
+    max_active_runs: 1
+    email: ["ml-ops@company.com", "data-science@company.com"]
+
+# Default arguments
+default_args:
+  owner: "ml-team"
+  depends_on_past: true
+  email_on_failure: true
+  email_on_retry: false
+
+# Task definitions
+tasks:
+  - task_id: prepare_training_data
+    operator: python
+    parameters:
+      python_callable: "functions.ml.prepare_training_data"
+      op_kwargs:
+        data_config:
+          source_table: "analytics.user_features"
+          feature_count: 25
+          sample_count: 10000
+          test_split: 0.2
+          validation_split: 0.1
+    
+  - task_id: validate_training_data
+    operator: python
+    parameters:
+      python_callable: "functions.data_validation.validate_data_schema"
+      op_kwargs:
+        schema_config:
+          expected_columns: 
+            - "user_id"
+            - "feature_1"
+            - "feature_2"
+            - "target"
+          required_columns:
+            - "user_id"
+            - "target"
+    depends_on: [prepare_training_data]
+    
+  - task_id: train_model
+    operator: python
+    parameters:
+      python_callable: "functions.ml.train_model"
+      op_kwargs:
+        model_config:
+          type: "random_forest"
+          hyperparameters:
+            n_estimators: 100
+            max_depth: 10
+            min_samples_split: 5
+          cross_validation_folds: 5
+    depends_on: [validate_training_data]
+    
+  - task_id: validate_model
+    operator: python
+    parameters:
+      python_callable: "functions.ml.validate_model"
+      op_kwargs:
+        validation_config:
+          min_accuracy: 0.85
+          min_precision: 0.80
+          min_recall: 0.75
+          test_data_size: 0.2
+    depends_on: [train_model]
+    
+  - task_id: deploy_model
+    operator: python
+    parameters:
+      python_callable: "functions.ml.deploy_model"
+      op_kwargs:
+        deployment_config:
+          target: "staging"
+          model_registry: "mlflow"
+          endpoint_config:
+            cpu_limit: "2"
+            memory_limit: "4Gi"
+    depends_on: [validate_model]
+    
+  - task_id: generate_model_report
+    operator: python
+    parameters:
+      python_callable: "functions.ml.generate_model_report"
+      op_kwargs:
+        report_config:
+          include_feature_importance: true
+          include_confusion_matrix: true
+          include_roc_curve: true
+          format: "html"
+    depends_on: [deploy_model]
+
+# Task groups
+task_groups:
+  data_preparation:
+    tasks: [prepare_training_data, validate_training_data]
+  model_development:
+    tasks: [train_model, validate_model]
+  deployment:
+    tasks: [deploy_model, generate_model_report]
+
+# Assets for cross-DAG dependencies
+assets:
+  consumes:
+    - "dataset://analytics/user_features"
+  produces:
+    - "dataset://ml/trained_models"
+
+# Notifications
+notifications:
+  on_success:
+    - type: "email"
+      recipients: ["ml-team@company.com"]
+    - type: "slack"
+      channel: "#ml-notifications"
+  on_failure:
+    - type: "email"
+      recipients: ["ml-ops@company.com"]
+    - type: "slack"
+      channel: "#ml-alerts"
+
+# Resource requirements
+resources:
+  train_model:
+    cpu: "4"
+    memory: "8Gi"
+    gpu: "1"
+  deploy_model:
+    cpu: "2"
+    memory: "4Gi"

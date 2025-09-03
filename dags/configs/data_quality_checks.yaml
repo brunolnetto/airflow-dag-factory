@@ -1,0 +1,238 @@
+dag_id: data_quality_checks
+description: "Comprehensive data quality monitoring pipeline"
+schedule: "0 6 * * *"  # Daily at 6 AM
+start_date: "2024-01-01"
+tags: ["data-quality", "monitoring", "daily"]
+
+# Template inheritance
+template:
+  extends: "base_etl"
+  overrides:
+    retries: 2
+    retry_delay: 300
+
+# Environment-specific settings
+environments:
+  dev:
+    schedule: "0 */6 * * *"  # Every 6 hours
+    max_active_runs: 1
+    email: ["dev-team@company.com"]
+  staging:
+    schedule: "0 6 * * *"  # Daily at 6 AM
+    max_active_runs: 1
+    email: ["staging-team@company.com"]
+  prod:
+    schedule: "0 6 * * *"  # Daily at 6 AM
+    max_active_runs: 1
+    email: ["data-quality@company.com", "ops@company.com"]
+
+# Default arguments
+default_args:
+  owner: "data-quality-team"
+  depends_on_past: false
+  email_on_failure: true
+  email_on_retry: false
+
+# Task definitions
+tasks:
+  - task_id: profile_data_quality
+    operator: python
+    parameters:
+      python_callable: "functions.data_quality.profile_data_quality"
+      op_kwargs:
+        profiling_config:
+          tables:
+            - "analytics.users"
+            - "analytics.orders"
+            - "analytics.products"
+            - "analytics.sessions"
+          metrics:
+            - "record_count"
+            - "null_percentages"
+            - "unique_counts"
+            - "data_types"
+    
+  - task_id: validate_data_freshness
+    operator: python
+    parameters:
+      python_callable: "functions.data_validation.validate_data_freshness"
+      op_kwargs:
+        freshness_config:
+          max_age_hours: 24
+          critical_tables:
+            - "analytics.users"
+            - "analytics.orders"
+    depends_on: []
+    
+  - task_id: validate_data_completeness
+    operator: python
+    parameters:
+      python_callable: "functions.data_validation.validate_data_completeness"
+      op_kwargs:
+        completeness_config:
+          min_records: 1000
+          max_null_percentage: 10.0
+          critical_columns:
+            - "user_id"
+            - "order_id"
+            - "product_id"
+    depends_on: [profile_data_quality]
+    
+  - task_id: validate_data_schema
+    operator: python
+    parameters:
+      python_callable: "functions.data_validation.validate_data_schema"
+      op_kwargs:
+        schema_config:
+          expected_columns:
+            - "id"
+            - "created_at"
+            - "updated_at"
+            - "status"
+          required_columns:
+            - "id"
+            - "created_at"
+    depends_on: [profile_data_quality]
+    
+  - task_id: validate_data_ranges
+    operator: python
+    parameters:
+      python_callable: "functions.data_validation.validate_data_ranges"
+      op_kwargs:
+        ranges_config:
+          checks:
+            - column: "price"
+              min: 0
+              max: 10000
+            - column: "quantity"
+              min: 1
+              max: 100
+            - column: "rating"
+              min: 1
+              max: 5
+    depends_on: [validate_data_completeness]
+    
+  - task_id: validate_business_rules
+    operator: python
+    parameters:
+      python_callable: "functions.data_validation.validate_business_rules"
+      op_kwargs:
+        rules_config:
+          rules:
+            - name: "order_total_consistency"
+              type: "calculation"
+              description: "Order total should equal sum of line items"
+            - name: "user_age_validity"
+              type: "range"
+              description: "User age should be between 13 and 120"
+            - name: "email_uniqueness"
+              type: "uniqueness"
+              description: "Email addresses should be unique per user"
+    depends_on: [validate_data_ranges]
+    
+  - task_id: monitor_data_drift
+    operator: python
+    parameters:
+      python_callable: "functions.data_quality.monitor_data_drift"
+      op_kwargs:
+        drift_config:
+          baseline_date: "2024-01-01"
+          drift_threshold: 0.1
+          columns:
+            - "user_age"
+            - "order_amount"
+            - "session_duration"
+            - "product_category"
+    depends_on: [validate_business_rules]
+    
+  - task_id: assess_data_freshness
+    operator: python
+    parameters:
+      python_callable: "functions.data_quality.assess_data_freshness"
+      op_kwargs:
+        freshness_config:
+          sources:
+            - name: "user_events"
+              max_age_hours: 2
+            - name: "order_data"
+              max_age_hours: 6
+            - name: "product_catalog"
+              max_age_hours: 24
+    depends_on: [monitor_data_drift]
+    
+  - task_id: generate_quality_report
+    operator: python
+    parameters:
+      python_callable: "functions.data_quality.generate_quality_report"
+      op_kwargs:
+        report_config:
+          format: "html"
+          include_charts: true
+          include_recommendations: true
+          recipients: ["data-quality@company.com"]
+    depends_on: [assess_data_freshness]
+    
+  - task_id: alert_on_quality_issues
+    operator: python
+    parameters:
+      python_callable: "functions.data_quality.alert_on_quality_issues"
+      op_kwargs:
+        alert_config:
+          quality_threshold: 0.8
+          email_recipients:
+            - "data-quality@company.com"
+            - "ops@company.com"
+          slack_channel: "#data-quality-alerts"
+          severity_levels:
+            critical: 0.6
+            warning: 0.8
+            info: 0.9
+    depends_on: [generate_quality_report]
+
+# Task groups
+task_groups:
+  validation_checks:
+    tasks: 
+      - validate_data_freshness
+      - validate_data_completeness
+      - validate_data_schema
+      - validate_data_ranges
+      - validate_business_rules
+  quality_monitoring:
+    tasks:
+      - profile_data_quality
+      - monitor_data_drift
+      - assess_data_freshness
+  reporting:
+    tasks:
+      - generate_quality_report
+      - alert_on_quality_issues
+
+# Assets for cross-DAG dependencies
+assets:
+  consumes:
+    - "dataset://analytics/users"
+    - "dataset://analytics/orders"
+    - "dataset://analytics/products"
+  produces:
+    - "dataset://quality/reports"
+
+# SLA configuration
+sla_miss_callback: "functions.data_quality.handle_sla_miss"
+sla: "01:00:00"  # 1 hour SLA
+
+# Notifications
+notifications:
+  on_success:
+    - type: "email"
+      recipients: ["data-quality@company.com"]
+  on_failure:
+    - type: "email"
+      recipients: ["data-quality@company.com", "ops@company.com"]
+    - type: "slack"
+      channel: "#data-quality-alerts"
+  on_sla_miss:
+    - type: "email"
+      recipients: ["ops@company.com"]
+    - type: "slack"
+      channel: "#sla-alerts"

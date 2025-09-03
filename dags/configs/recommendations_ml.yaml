@@ -1,0 +1,97 @@
+# Product Recommendation ML Pipeline
+# Uses ML template with specific configurations
+
+template:
+  extends: ml_pipeline
+
+dag_id: ml_product_recommendations
+description: "Train and deploy product recommendation model"
+schedule: "0 3 * * 1"  # Weekly on Monday at 3 AM
+start_date: "2024-01-01"
+tags: [ml, recommendations, weekly]
+
+# Environment-specific configurations
+environments:
+  dev:
+    schedule: "@once"
+    email: ["ml-dev@company.com"]
+    
+  staging:
+    schedule: "0 4 * * 1"  # Monday 4 AM
+    email: ["ml-staging@company.com"]
+    
+  prod:
+    schedule: "0 3 * * 1"  # Monday 3 AM
+    email: ["ml-team@company.com", "product-team@company.com"]
+
+# ML-specific parameters
+parameters:
+  model_type: "recommendation"
+  dataset_path: "s3://ml-data/product-interactions/latest/"
+  hyperparameters:
+    embedding_dim: 128
+    learning_rate: 0.001
+    batch_size: 512
+    epochs: 100
+  validation_split: 0.2
+
+# Override and add ML-specific tasks
+tasks:
+  - task_id: data_preprocessing
+    operator: python
+    parameters:
+      python_callable: "ml.recommendations.preprocess_interaction_data"
+      op_kwargs:
+        min_interactions: 5
+        time_window: 90  # days
+        
+  - task_id: feature_engineering
+    operator: python
+    parameters:
+      python_callable: "ml.recommendations.create_embeddings"
+      
+  - task_id: model_training
+    operator: python
+    parameters:
+      python_callable: "ml.recommendations.train_collaborative_filtering"
+      
+  - task_id: model_validation
+    operator: python
+    parameters:
+      python_callable: "ml.recommendations.validate_recommendations"
+      
+  - task_id: model_deployment
+    operator: python
+    parameters:
+      python_callable: "ml.recommendations.deploy_to_serving"
+      
+  # Additional recommendation-specific tasks
+  - task_id: generate_batch_recommendations
+    operator: python
+    parameters:
+      python_callable: "ml.recommendations.generate_batch_recs"
+    depends_on: [model_deployment]
+    
+  - task_id: update_recommendation_cache
+    operator: python
+    parameters:
+      python_callable: "cache.recommendations.update_redis_cache"
+    depends_on: [generate_batch_recommendations]
+
+# Update task groups for recommendations
+task_groups:
+  - group_id: data_preparation
+    tasks: [data_preprocessing, feature_engineering]
+  - group_id: model_lifecycle
+    tasks: [model_training, model_validation, model_deployment]
+  - group_id: batch_inference
+    tasks: [generate_batch_recommendations, update_recommendation_cache]
+
+# Recommendation pipeline assets
+assets:
+  consumes:
+    - "s3://data-lake/user-interactions/daily"
+    - "snowflake://warehouse/product_catalog"
+  produces:
+    - "s3://ml-models/recommendations/latest"
+    - "redis://cache/user-recommendations"

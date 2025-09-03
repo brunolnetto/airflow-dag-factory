@@ -1,0 +1,91 @@
+# File: docker/docker-compose.dag-factory.yml
+
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:latest
+    ports:
+      - "6379:6379"
+
+  airflow-init:
+    build: 
+      context: ..
+      dockerfile: docker/Dockerfile.dag-factory
+    environment: &airflow-common-env
+      AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
+      AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'false'
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth'
+      _AIRFLOW_DB_UPGRADE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: admin
+      _AIRFLOW_WWW_USER_PASSWORD: admin
+    depends_on:
+      - postgres
+    command: >
+      bash -c "
+      airflow db init &&
+      airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com
+      "
+
+  airflow-webserver:
+    build: 
+      context: ..
+      dockerfile: docker/Dockerfile.dag-factory
+    command: webserver
+    ports:
+      - "8080:8080"
+    environment: *airflow-common-env
+    depends_on:
+      - postgres
+      - redis
+      - airflow-init
+    volumes:
+      - ../dags:/opt/airflow/dags
+      - ../logs:/opt/airflow/logs
+
+  airflow-scheduler:
+    build: 
+      context: ..
+      dockerfile: docker/Dockerfile.dag-factory
+    command: scheduler
+    environment: *airflow-common-env
+    depends_on:
+      - postgres
+      - redis
+      - airflow-init
+    volumes:
+      - ../dags:/opt/airflow/dags
+      - ../logs:/opt/airflow/logs
+
+  airflow-worker:
+    build: 
+      context: ..
+      dockerfile: docker/Dockerfile.dag-factory
+    command: celery worker
+    environment: *airflow-common-env
+    depends_on:
+      - postgres
+      - redis
+      - airflow-init
+    volumes:
+      - ../dags:/opt/airflow/dags
+      - ../logs:/opt/airflow/logs
+
+volumes:
+  postgres_data:

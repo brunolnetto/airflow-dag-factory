@@ -1,0 +1,74 @@
+# Machine Learning Pipeline Template
+description: "Template for ML training and inference pipelines"
+tags: [generated, ml, training]
+
+# ML-specific defaults
+owner: "ml-engineering"
+catchup: false
+max_active_runs: 1
+max_active_tasks: 8  # ML tasks are typically resource-intensive
+
+# ML pipeline structure
+tasks:
+  - task_id: data_preprocessing
+    operator: python
+    parameters:
+      python_callable: "ml.preprocessing.prepare_features"
+    pool: "ml_pool"
+    priority_weight: 10
+    
+  - task_id: feature_engineering
+    operator: python
+    parameters:
+      python_callable: "ml.features.engineer_features"
+    depends_on: [data_preprocessing]
+    pool: "ml_pool"
+    
+  - task_id: model_training
+    operator: python
+    parameters:
+      python_callable: "ml.training.train_model"
+    depends_on: [feature_engineering]
+    pool: "gpu_pool"
+    priority_weight: 20
+    
+  - task_id: model_validation
+    operator: python
+    parameters:
+      python_callable: "ml.validation.validate_model"
+    depends_on: [model_training]
+    
+  - task_id: model_deployment
+    operator: python
+    parameters:
+      python_callable: "ml.deployment.deploy_model"
+    depends_on: [model_validation]
+
+# Task groups for ML pipeline
+task_groups:
+  - group_id: data_preparation
+    tooltip: "Data preparation and feature engineering"
+    tasks: [data_preprocessing, feature_engineering]
+  - group_id: model_lifecycle
+    tooltip: "Model training, validation, and deployment"
+    tasks: [model_training, model_validation, model_deployment]
+
+# Template parameters
+parameters:
+  model_type:
+    type: string
+    description: "Type of ML model to train"
+    options: ["classification", "regression", "clustering"]
+    required: true
+  dataset_path:
+    type: string
+    description: "Path to training dataset"
+    required: true
+  hyperparameters:
+    type: object
+    description: "Model hyperparameters"
+    default: {}
+  validation_split:
+    type: number
+    description: "Validation data split ratio"
+    default: 0.2

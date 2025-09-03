@@ -1,0 +1,70 @@
+# Customer Data ETL Pipeline
+# Uses template inheritance and environment overrides
+
+template:
+  extends: daily_etl
+  overrides:
+    description: "Daily customer data ETL pipeline"
+
+dag_id: etl_customer_data_daily
+description: "Process customer data from CRM to data warehouse"
+tags: [customer, crm, daily]
+
+# Environment-specific configurations
+environments:
+  dev:
+    schedule: "@once"  # Manual trigger in dev
+    start_date: "2024-09-01"
+    email: ["dev-team@company.com"]
+    tasks:
+      - task_id: extract
+        parameters:
+          python_callable: "etl.customer.extract_dev"
+          
+  staging:
+    schedule: "0 2 * * *"  # 2 AM daily in staging
+    start_date: "2024-09-01"
+    email: ["qa-team@company.com"]
+    
+  prod:
+    schedule: "0 1 * * *"  # 1 AM daily in production
+    start_date: "2024-01-01"
+    email: ["data-team@company.com", "ops-team@company.com"]
+    max_active_runs: 1
+    catchup: false
+
+# Override template parameters
+parameters:
+  source_connection: "crm_postgres"
+  target_connection: "warehouse_snowflake"
+  batch_size: 5000
+  data_quality_checks: true
+
+# Customer-specific tasks (added to template tasks)
+tasks:
+  - task_id: customer_segmentation
+    operator: python
+    parameters:
+      python_callable: "ml.customer.update_segments"
+    depends_on: [data_quality_check]
+    
+  - task_id: update_dashboard
+    operator: bash
+    parameters:
+      bash_command: "curl -X POST ${DASHBOARD_REFRESH_URL:-http://localhost:3000}/customer-metrics"
+    depends_on: [customer_segmentation]
+
+# Add customer-specific task group
+task_groups:
+  - group_id: customer_analytics
+    tooltip: "Customer analytics and dashboard updates"
+    tasks: [customer_segmentation, update_dashboard]
+
+# Customer data assets
+assets:
+  consumes:
+    - "postgres://crm/customers"
+    - "postgres://crm/orders"
+  produces:
+    - "snowflake://warehouse/dim_customers"
+    - "snowflake://warehouse/fact_customer_metrics"

@@ -1,12 +1,10 @@
 """
 Apache Airflow DAG Factory Implementation
 Production-ready solution for generating standardized DAGs from YAML configurations.
+Enhanced with template inheritance, environment overrides, and security features.
 """
 
-import os
-import yaml
 import json
-import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Union, Callable
 from pathlib import Path
@@ -16,19 +14,35 @@ from abc import ABC, abstractmethod
 import jsonschema
 from jinja2 import Template, Environment, FileSystemLoader
 
-from airflow import DAG
-from airflow.operators.dummy import DummyOperator
-from airflow.operators.bash import BashOperator
-from airflow.operators.python import PythonOperator
-from airflow.operators.email import EmailOperator
-from airflow.utils.dates import days_ago
-from airflow.models import Variable
-from airflow.utils.task_group import TaskGroup
-from airflow.datasets import Dataset
+# Import new modules
+from .managers.template import ConfigurationComposer, TemplateManager, EnvironmentManager
+from .managers.security import SecurityManager, AccessLevel, AuditAction
+from .utils import (
+    logger, ConfigurationError, DAGFactoryBaseError as DAGFactoryError,
+    substitute_env_vars, validate_dag_id, DEFAULT_DAG_ARGS, SUPPORTED_OPERATORS
+)
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+try:
+    import yaml
+except ImportError:
+    yaml = None
+
+# Airflow imports (will be available in Airflow environment)
+try:
+    from airflow import DAG
+    from airflow.operators.dummy import DummyOperator
+    from airflow.operators.bash import BashOperator
+    from airflow.operators.python import PythonOperator
+    from airflow.operators.email import EmailOperator
+    from airflow.utils.dates import days_ago
+    from airflow.models import Variable
+    from airflow.utils.task_group import TaskGroup
+    from airflow.datasets import Dataset
+except ImportError:
+    # For development/testing outside Airflow environment
+    logger.warning("Airflow modules not available - running in development mode")
+    DAG = DummyOperator = BashOperator = PythonOperator = EmailOperator = None
+    days_ago = Variable = TaskGroup = Dataset = None
 
 # Configuration Schema for Validation
 CONFIG_SCHEMA = {
@@ -40,6 +54,21 @@ CONFIG_SCHEMA = {
         "schedule": {"type": "string"},
         "start_date": {"type": "string"},
         "catchup": {"type": "boolean", "default": False},
+        "template": {
+            "type": "object",
+            "properties": {
+                "extends": {"type": "string"},
+                "overrides": {"type": "object"}
+            }
+        },
+        "environments": {
+            "type": "object",
+            "properties": {
+                "dev": {"type": "object"},
+                "staging": {"type": "object"},
+                "prod": {"type": "object"}
+            }
+        },
         "max_active_runs": {"type": "integer", "minimum": 1, "default": 1},
         "max_active_tasks": {"type": "integer", "minimum": 1, "default": 16},
         "tags": {"type": "array", "items": {"type": "string"}},
@@ -96,16 +125,6 @@ class ValidationResult:
     is_valid: bool
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
-
-
-class ConfigurationError(Exception):
-    """Custom exception for configuration-related errors."""
-    pass
-
-
-class DAGFactoryError(Exception):
-    """Custom exception for DAG factory errors."""
-    pass
 
 
 class OperatorRegistry:
@@ -365,21 +384,35 @@ class AssetManager:
 
 
 class DAGFactory:
-    """Main DAG Factory class for generating Airflow DAGs."""
+    """Main DAG Factory class for generating Airflow DAGs with enhanced features."""
     
-    def __init__(self, config_dir: str = 'dags/configs'):
+    def __init__(self, config_dir: str = 'dags/configs', templates_dir: str = 'dags/templates', 
+                 enable_security: bool = True):
         self.config_dir = Path(config_dir)
+        self.templates_dir = Path(templates_dir)
+        self.enable_security = enable_security
+        
+        # Core components
         self.operator_registry = OperatorRegistry()
         self.validator = ConfigurationValidator(self.operator_registry)
         self.task_builder = TaskBuilder(self.operator_registry)
         self.asset_manager = AssetManager()
+        
+        # Enhanced features
+        self.composer = ConfigurationComposer(str(templates_dir))
+        if enable_security:
+            self.security_manager = SecurityManager(str(config_dir))
+        else:
+            self.security_manager = None
         
         # Performance tracking
         self.generation_metrics = {
             'total_dags': 0,
             'successful_generations': 0,
             'failed_generations': 0,
-            'total_generation_time': 0
+            'total_generation_time': 0,
+            'template_usage': {},
+            'environment_usage': {}
         }
     
     def register_custom_operator(self, name: str, operator_class, required_params: List[str], 
@@ -387,26 +420,41 @@ class DAGFactory:
         """Register a custom operator."""
         self.operator_registry.register_operator(name, operator_class, required_params, optional_params)
     
-    def load_config(self, config_path: Union[str, Path]) -> Dict[str, Any]:
-        """Load and validate configuration file."""
+    def load_config(self, config_path: Union[str, Path], username: str = None, 
+                    environment: str = None) -> Dict[str, Any]:
+        """Load and validate configuration file with enhanced features."""
         config_path = Path(config_path)
         
         if not config_path.exists():
             raise ConfigurationError(f"Configuration file not found: {config_path}")
         
         try:
-            with open(config_path, 'r') as f:
-                if config_path.suffix.lower() == '.yaml' or config_path.suffix.lower() == '.yml':
-                    config = yaml.safe_load(f)
-                elif config_path.suffix.lower() == '.json':
-                    config = json.load(f)
-                else:
-                    raise ConfigurationError(f"Unsupported configuration format: {config_path.suffix}")
+            # Load raw configuration
+            if self.enable_security and self.security_manager and username:
+                config = self.security_manager.load_secure_configuration(config_path, username)
+            else:
+                with open(config_path, 'r') as f:
+                    if config_path.suffix.lower() in ['.yaml', '.yml']:
+                        config = yaml.safe_load(f)
+                    elif config_path.suffix.lower() == '.json':
+                        config = json.load(f)
+                    else:
+                        raise ConfigurationError(f"Unsupported configuration format: {config_path.suffix}")
+            
+            # Apply template inheritance and environment overrides
+            config = self.composer.compose_configuration(config, environment)
             
             # Environment variable substitution
-            config = self._substitute_env_vars(config)
+            config = substitute_env_vars(config)
             
-            # Validate configuration
+            # Validate composition
+            composition_errors = self.composer.validate_composition(config)
+            if composition_errors:
+                error_msg = f"Configuration composition failed for {config_path}:\n"
+                error_msg += "\n".join([f"  - {error}" for error in composition_errors])
+                raise ConfigurationError(error_msg)
+            
+            # Standard validation
             validation_result = self.validator.validate_config(config)
             
             if not validation_result.is_valid:
@@ -418,6 +466,16 @@ class DAGFactory:
             for warning in validation_result.warnings:
                 logger.warning(f"Config warning in {config_path}: {warning}")
             
+            # Track usage metrics
+            if 'template' in config and 'extends' in config['template']:
+                template_name = config['template']['extends']
+                self.generation_metrics['template_usage'][template_name] = \
+                    self.generation_metrics['template_usage'].get(template_name, 0) + 1
+            
+            if environment:
+                self.generation_metrics['environment_usage'][environment] = \
+                    self.generation_metrics['environment_usage'].get(environment, 0) + 1
+            
             return config
             
         except yaml.YAMLError as e:
@@ -425,31 +483,7 @@ class DAGFactory:
         except json.JSONDecodeError as e:
             raise ConfigurationError(f"JSON parsing error in {config_path}: {str(e)}")
     
-    def _substitute_env_vars(self, obj: Any) -> Any:
-        """Recursively substitute environment variables in configuration."""
-        if isinstance(obj, str):
-            # Simple ${VAR} substitution
-            import re
-            pattern = r'\$\{([^}]+)\}'
-            
-            def replace_var(match):
-                var_name = match.group(1)
-                default_value = None
-                
-                # Handle ${VAR:-default} syntax
-                if ':-' in var_name:
-                    var_name, default_value = var_name.split(':-', 1)
-                
-                return os.getenv(var_name, default_value or match.group(0))
-            
-            return re.sub(pattern, replace_var, obj)
-        elif isinstance(obj, dict):
-            return {k: self._substitute_env_vars(v) for k, v in obj.items()}
-        elif isinstance(obj, list):
-            return [self._substitute_env_vars(item) for item in obj]
-        else:
-            return obj
-    
+
     def create_dag(self, config: Dict[str, Any]) -> DAG:
         """Create a DAG from configuration."""
         start_time = datetime.now()
@@ -627,14 +661,26 @@ factory.register_custom_operator(
     ['op_args', 'op_kwargs']
 )
 
-# Generate DAGs from configuration files
-generated_dags = factory.generate_dags_from_directory()
+# Generate DAGs from configuration files only when in Airflow environment
+# This prevents errors when importing for CLI or testing purposes
+if __name__ != '__main__':
+    # Only generate DAGs if we're being imported by Airflow
+    try:
+        import airflow
+        # We're in an Airflow environment, safe to generate DAGs
+        generated_dags = factory.generate_dags_from_directory()
 
-# Make DAGs available to Airflow
-for dag in generated_dags:
-    globals()[dag.dag_id] = dag
+        # Make DAGs available to Airflow
+        for dag in generated_dags:
+            globals()[dag.dag_id] = dag
 
-# Log metrics
-if generated_dags:
-    metrics = factory.get_metrics()
-    logger.info(f"DAG Factory Metrics: {metrics}")
+        # Log metrics
+        if generated_dags:
+            metrics = factory.get_metrics()
+            logger.info(f"DAG Factory Metrics: {metrics}")
+    except ImportError:
+        # Not in Airflow environment, skip DAG generation
+        logger.debug("Airflow not available, skipping automatic DAG generation")
+        generated_dags = []
+else:
+    generated_dags = []

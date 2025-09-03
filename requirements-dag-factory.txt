@@ -1,0 +1,7 @@
+# File: requirements-dag-factory.txt
+apache-airflow[postgres,celery,redis,s3,crypto]==2.8.0
+jsonschema==4.17.3
+jinja2==3.1.2
+pyyaml==6.0
+pandas==2.0.3
+prometheus-client==0.17.1

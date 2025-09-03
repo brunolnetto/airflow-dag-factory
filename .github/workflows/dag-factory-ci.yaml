@@ -1,0 +1,416 @@
+# GitHub Actions Workflow
+# File: .github/workflows/dag-factory-ci.yml
+name: DAG Factory CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+    paths: 
+      - 'dags/configs/**'
+      - 'dags/dag_factory.py'
+      - 'dags/functions/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'dags/configs/**'
+      - 'dags/dag_factory.py'
+      - 'dags/functions/**'
+
+env:
+  AIRFLOW_VERSION: "2.8.0"
+  PYTHON_VERSION: "3.10"
+
+jobs:
+  # ================================
+  # CONFIGURATION VALIDATION
+  # ================================
+  validate-configurations:
+    runs-on: ubuntu-latest
+    name: Validate DAG Configurations
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        
+    - name: Install dependencies
+      run: |
+        pip install --upgrade pip
+        pip install apache-airflow[postgres]==${{ env.AIRFLOW_VERSION }}
+        pip install jsonschema==4.17.3
+        pip install pyyaml==6.0
+        pip install pytest==7.4.0
+        pip install pytest-cov==4.1.0
+        
+    - name: Initialize Airflow
+      run: |
+        export AIRFLOW_HOME=$PWD/airflow_home
+        airflow db init
+        
+    - name: Validate all configurations
+      run: |
+        python dags/scripts/validate_config.py dags/configs/*.yaml
+        
+    - name: Test DAG generation
+      run: |
+        cd dags
+        python -c "
+        from dag_factory import DAGFactory
+        import sys
+        
+        factory = DAGFactory('configs')
+        try:
+            dags = factory.generate_dags_from_directory()
+            print(f'✅ Successfully generated {len(dags)} DAGs')
+            
+            # Validate DAG structure
+            for dag in dags:
+                assert dag.dag_id is not None
+                assert len(dag.tasks) > 0
+                print(f'✅ DAG {dag.dag_id}: {len(dag.tasks)} tasks')
+                
+        except Exception as e:
+            print(f'❌ DAG generation failed: {str(e)}')
+            sys.exit(1)
+        "
+
+  # ================================
+  # UNIT TESTING
+  # ================================
+  unit-tests:
+    runs-on: ubuntu-latest
+    name: Run Unit Tests
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        
+    - name: Install dependencies
+      run: |
+        pip install --upgrade pip
+        pip install apache-airflow[postgres]==${{ env.AIRFLOW_VERSION }}
+        pip install jsonschema==4.17.3
+        pip install pyyaml==6.0
+        pip install pytest==7.4.0
+        pip install pytest-cov==4.1.0
+        pip install pytest-mock==3.11.1
+        
+    - name: Initialize Airflow
+      run: |
+        export AIRFLOW_HOME=$PWD/airflow_home
+        airflow db init
+        
+    - name: Run tests with coverage
+      run: |
+        cd dags
+        pytest tests/ -v --cov=dag_factory --cov-report=xml --cov-report=html
+        
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./dags/coverage.xml
+        flags: unittests
+        name: dag-factory-coverage
+
+  # ================================
+  # SECURITY SCANNING
+  # ================================
+  security-scan:
+    runs-on: ubuntu-latest
+    name: Security Scan
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Run Bandit security scan
+      run: |
+        pip install bandit[toml]
+        bandit -r dags/ -f json -o bandit-report.json
+        
+    - name: Run safety check for dependencies
+      run: |
+        pip install safety
+        safety check --json --output safety-report.json
+        
+    - name: Scan for secrets
+      uses: trufflesecurity/trufflehog@main
+      with:
+        path: ./
+        base: main
+        head: HEAD
+
+  # ================================
+  # INTEGRATION TESTING
+  # ================================
+  integration-tests:
+    runs-on: ubuntu-latest
+    name: Integration Tests
+    needs: [validate-configurations, unit-tests]
+    
+    services:
+      postgres:
+        image: postgres:13
+        env:
+          POSTGRES_USER: airflow
+          POSTGRES_PASSWORD: airflow
+          POSTGRES_DB: airflow
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        
+    - name: Install dependencies
+      run: |
+        pip install --upgrade pip
+        pip install apache-airflow[postgres]==${{ env.AIRFLOW_VERSION }}
+        pip install jsonschema==4.17.3
+        pip install pyyaml==6.0
+        pip install pytest==7.4.0
+        pip install psycopg2-binary
+        
+    - name: Configure Airflow
+      env:
+        AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql://airflow:airflow@localhost:5432/airflow
+        AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      run: |
+        export AIRFLOW_HOME=$PWD/airflow_home
+        airflow db init
+        airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com
+        
+    - name: Test DAG parsing in Airflow
+      env:
+        AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql://airflow:airflow@localhost:5432/airflow
+        AIRFLOW__CORE__DAGS_FOLDER: ${{ github.workspace }}/dags
+      run: |
+        export AIRFLOW_HOME=$PWD/airflow_home
+        
+        # Test DAG bag loading
+        python -c "
+        from airflow.models import DagBag
+        import sys
+        
+        dagbag = DagBag(dag_folder='dags', include_examples=False)
+        
+        if dagbag.import_errors:
+            print('❌ DAG import errors:')
+            for filename, error in dagbag.import_errors.items():
+                print(f'  {filename}: {error}')
+            sys.exit(1)
+        
+        print(f'✅ Successfully loaded {len(dagbag.dags)} DAGs')
+        
+        # Validate factory-generated DAGs
+        factory_dags = [dag for dag in dagbag.dags.values() if 'generated' in dag.tags]
+        print(f'✅ Found {len(factory_dags)} factory-generated DAGs')
+        
+        for dag in factory_dags:
+            print(f'  - {dag.dag_id}: {len(dag.tasks)} tasks')
+            
+            # Basic DAG validation
+            assert dag.start_date is not None
+            assert dag.schedule_interval is not None
+            assert len(dag.tasks) > 0
+            
+            # Validate task dependencies
+            for task in dag.tasks:
+                assert task.dag == dag
+                assert task.task_id is not None
+        "
+
+  # ================================
+  # DEPLOYMENT TO STAGING
+  # ================================
+  deploy-staging:
+    runs-on: ubuntu-latest
+    name: Deploy to Staging
+    needs: [integration-tests, security-scan]
+    if: github.ref == 'refs/heads/develop'
+    environment: staging
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1
+        
+    - name: Deploy to staging Airflow
+      run: |
+        # Sync DAG files to staging S3 bucket
+        aws s3 sync dags/ s3://${{ secrets.STAGING_AIRFLOW_BUCKET }}/dags/ \
+          --exclude "tests/*" \
+          --exclude "*.pyc" \
+          --exclude "__pycache__/*"
+        
+        # Trigger Airflow DAG refresh
+        curl -X POST "${{ secrets.STAGING_AIRFLOW_URL }}/api/v1/dagSources/refresh" \
+          -H "Authorization: Bearer ${{ secrets.STAGING_AIRFLOW_TOKEN }}"
+        
+    - name: Run staging smoke tests
+      run: |
+        # Wait for DAGs to be loaded
+        sleep 60
+        
+        # Test DAG factory health check
+        curl -f "${{ secrets.STAGING_AIRFLOW_URL }}/api/v1/dags/dag_factory_health_monitoring/dagRuns" \
+          -H "Authorization: Bearer ${{ secrets.STAGING_AIRFLOW_TOKEN }}"
+
+  # ================================
+  # DEPLOYMENT TO PRODUCTION
+  # ================================
+  deploy-production:
+    runs-on: ubuntu-latest
+    name: Deploy to Production
+    needs: [integration-tests, security-scan]
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Manual approval gate
+      uses: trstringer/manual-approval@v1
+      with:
+        secret: ${{ github.TOKEN }}
+        approvers: data-engineering-leads
+        issue-title: "Production Deployment: DAG Factory Updates"
+        issue-body: |
+          Please review the DAG Factory changes before production deployment.
+          
+          **Changes in this release:**
+          - Configuration files modified
+          - Factory code updates
+          - New features or bug fixes
+          
+          **Pre-deployment checklist:**
+          - [ ] All tests passing
+          - [ ] Security scans clean
+          - [ ] Staging deployment successful
+          - [ ] Documentation updated
+        
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.PROD_AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.PROD_AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1
+        
+    - name: Create backup of current production DAGs
+      run: |
+        # Create backup timestamp
+        BACKUP_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+        
+        # Backup current production DAGs
+        aws s3 sync s3://${{ secrets.PROD_AIRFLOW_BUCKET }}/dags/ \
+          s3://${{ secrets.PROD_AIRFLOW_BACKUP_BUCKET }}/backups/${BACKUP_TIMESTAMP}/dags/
+        
+    - name: Deploy to production Airflow
+      run: |
+        # Deploy new DAG files
+        aws s3 sync dags/ s3://${{ secrets.PROD_AIRFLOW_BUCKET }}/dags/ \
+          --exclude "tests/*" \
+          --exclude "*.pyc" \
+          --exclude "__pycache__/*" \
+          --delete
+        
+        # Trigger Airflow DAG refresh
+        curl -X POST "${{ secrets.PROD_AIRFLOW_URL }}/api/v1/dagSources/refresh" \
+          -H "Authorization: Bearer ${{ secrets.PROD_AIRFLOW_TOKEN }}"
+        
+    - name: Post-deployment verification
+      run: |
+        # Wait for DAGs to be loaded
+        sleep 90
+        
+        # Verify DAG factory health
+        response=$(curl -s "${{ secrets.PROD_AIRFLOW_URL }}/api/v1/dags/dag_factory_health_monitoring" \
+          -H "Authorization: Bearer ${{ secrets.PROD_AIRFLOW_TOKEN }}")
+        
+        echo "Health check response: $response"
+        
+        # Check if factory-generated DAGs are active
+        active_dags=$(curl -s "${{ secrets.PROD_AIRFLOW_URL }}/api/v1/dags?tag=generated" \
+          -H "Authorization: Bearer ${{ secrets.PROD_AIRFLOW_TOKEN }}" | jq '.dags | length')
+        
+        echo "Active factory-generated DAGs: $active_dags"
+        
+        if [ "$active_dags" -eq "0" ]; then
+          echo "❌ No factory-generated DAGs found after deployment"
+          exit 1
+        fi
+        
+        echo "✅ Production deployment verification successful"
+        
+    - name: Notify deployment success
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        channel: '#data-engineering'
+        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        message: |
+          🚀 DAG Factory deployed to production successfully!
+          
+          **Deployment Details:**
+          - Commit: ${{ github.sha }}
+          - Branch: ${{ github.ref }}
+          - Active DAGs: Check Airflow UI
+          
+          **Next Steps:**
+          - Monitor DAG execution
+          - Check health monitoring dashboard
+          - Verify scheduled runs
+
+---
+# ================================
+# DOCKER CONFIGURATION
+# ================================
+
+# Dockerfile for DAG Factory development and testing
+# File: docker/Dockerfile.dag-factory
+
+FROM apache/airflow:2.8.0-python3.10
+
+# Install additional dependencies
+COPY requirements-dag-factory.txt /tmp/
+RUN pip install --no-cache-dir -r /tmp/requirements-dag-factory.txt
+
+# Copy DAG Factory code
+COPY dags/dag_factory.py /opt/airflow/dags/
+COPY dags/functions/ /opt/airflow/dags/functions/
+COPY dags/scripts/ /opt/airflow/dags/scripts/
+COPY dags/configs/ /opt/airflow/dags/configs/
+
+# Set proper permissions
+USER airflow
+RUN chmod +x /opt/airflow/dags/scripts/*.py
+
+# Environment variables for DAG Factory
+ENV DAG_FACTORY_CONFIG_DIR=/opt/airflow/dags/configs
+ENV DAG_FACTORY_FUNCTIONS_DIR=/opt/airflow/dags/functions

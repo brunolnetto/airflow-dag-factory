@@ -1,0 +1,65 @@
+# Base ETL Template
+description: "Base template for ETL workflows"
+tags: [generated, etl, template]
+
+# Default configuration for ETL DAGs
+owner: "data-engineering"
+catchup: false
+max_active_runs: 1
+max_active_tasks: 16
+retries: 2
+retry_delay: 300
+
+# Email notifications
+email_on_failure: true
+email_on_retry: false
+
+# Default task structure for ETL
+tasks:
+  - task_id: extract
+    operator: python
+    parameters:
+      python_callable: "etl.extract.main"
+    
+  - task_id: transform
+    operator: python
+    parameters:
+      python_callable: "etl.transform.main"
+    depends_on: [extract]
+    
+  - task_id: load
+    operator: python
+    parameters:
+      python_callable: "etl.load.main"
+    depends_on: [transform]
+    
+  - task_id: validate
+    operator: python
+    parameters:
+      python_callable: "etl.validate.main"
+    depends_on: [load]
+
+# Default task groups
+task_groups:
+  - group_id: etl_pipeline
+    tooltip: "ETL Pipeline Tasks"
+    tasks: [extract, transform, load, validate]
+
+# Template parameters that can be overridden
+parameters:
+  source_connection:
+    type: string
+    description: "Source database connection"
+    required: true
+  target_connection:
+    type: string
+    description: "Target database connection"
+    required: true
+  batch_size:
+    type: integer
+    description: "Batch size for processing"
+    default: 1000
+  data_quality_checks:
+    type: boolean
+    description: "Enable data quality checks"
+    default: true

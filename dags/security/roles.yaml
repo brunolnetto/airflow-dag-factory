@@ -1,0 +1,105 @@
+# DAG Factory Security Configuration
+# Role-based access control for DAG configuration management
+
+roles:
+  # Viewer role - read-only access
+  viewer:
+    permissions: [read]
+    description: "Can view configurations and templates"
+    
+  # Developer role - create and modify configurations
+  developer:
+    permissions: [read, write]
+    description: "Can create and modify DAG configurations"
+    
+  # Admin role - full access including security management
+  admin:
+    permissions: [read, write, admin]
+    description: "Full access to all DAG Factory operations"
+    
+  # ML Engineer role - specialized for ML pipelines
+  ml_engineer:
+    permissions: [read, write]
+    description: "Can manage ML pipeline configurations"
+    resource_restrictions:
+      - "ml_*"  # Only ML-related DAGs
+      
+  # Data Engineer role - specialized for ETL pipelines
+  data_engineer:
+    permissions: [read, write]
+    description: "Can manage ETL pipeline configurations"
+    resource_restrictions:
+      - "etl_*"  # Only ETL-related DAGs
+
+# User assignments
+users:
+  # Default development user
+  default:
+    roles: [viewer]
+    email: "dev@company.com"
+    department: "Engineering"
+    
+  # Example users for demonstration
+  alice_smith:
+    roles: [data_engineer]
+    email: "alice.smith@company.com"
+    department: "Data Engineering"
+    
+  bob_jones:
+    roles: [ml_engineer]
+    email: "bob.jones@company.com"
+    department: "Machine Learning"
+    
+  carol_admin:
+    roles: [admin]
+    email: "carol.admin@company.com"
+    department: "Platform Engineering"
+    
+  dave_analyst:
+    roles: [viewer]
+    email: "dave.analyst@company.com"
+    department: "Data Analytics"
+
+# Resource-based permissions (future enhancement)
+resources:
+  templates:
+    base_etl:
+      read: [data_engineer, admin]
+      write: [admin]
+    ml_pipeline:
+      read: [ml_engineer, admin]
+      write: [admin]
+      
+  configurations:
+    etl_*:
+      read: [data_engineer, admin, viewer]
+      write: [data_engineer, admin]
+    ml_*:
+      read: [ml_engineer, admin, viewer]
+      write: [ml_engineer, admin]
+
+# Security settings
+security:
+  # Encryption settings
+  encryption:
+    enabled: true
+    algorithm: "Fernet"
+    key_rotation_days: 90
+    
+  # Audit logging settings
+  audit:
+    enabled: true
+    log_file: "dags/security/audit.log"
+    retention_days: 365
+    log_sensitive_data: false
+    
+  # Session settings
+  session:
+    timeout_minutes: 60
+    require_mfa: false  # Multi-factor authentication
+    
+  # API security
+  api:
+    rate_limiting: true
+    max_requests_per_minute: 60
+    require_authentication: true
