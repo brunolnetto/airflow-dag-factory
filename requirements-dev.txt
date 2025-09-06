@@ -13,7 +13,7 @@ flake8==6.0.0
 pylint==2.17.5
 isort==5.12.0
 bandit[toml]==1.7.5
-safety==2.3.4
+safety==2.3.5
 
 # Documentation
 sphinx==7.1.2
